@@ -159,8 +159,11 @@ from synapse.ml.lightgbm import LightGBMClassifier
 from pyspark.ml.classification import OneVsRest
 from pyspark.ml import Pipeline
 
-# Iniciar uma sessão Spark
-spark = SparkSession.builder.appName("AllModelsComparison").getOrCreate()
+# Configurar o SparkSession para usar o SynapseML
+spark = SparkSession.builder \
+    .appName("AllModelsComparison") \
+    .config("spark.jars.packages", "com.microsoft.azure:synapseml_2.12:0.10.0") \
+    .getOrCreate()
 
 # Exemplo de DataFrame
 data = [
@@ -187,19 +190,19 @@ train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
 
 # Definir todos os modelos
 models = [
-    LogisticRegression(featuresCol='features', labelCol=label_col),
-    DecisionTreeClassifier(featuresCol='features', labelCol=label_col),
-    RandomForestClassifier(featuresCol='features', labelCol=label_col),
-    GBTClassifier(featuresCol='features', labelCol=label_col),
-    LinearSVC(featuresCol='features', labelCol=label_col),
-    NaiveBayes(featuresCol='features', labelCol=label_col),
-    MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, layers=[3, 5, 2]),
-    FMClassifier(featuresCol='features', labelCol=label_col),
-    LightGBMClassifier(featuresCol='features', labelCol=label_col, predictionCol="prediction")
+    ("LogisticRegression", LogisticRegression(featuresCol='features', labelCol=label_col)),
+    ("DecisionTreeClassifier", DecisionTreeClassifier(featuresCol='features', labelCol=label_col)),
+    ("RandomForestClassifier", RandomForestClassifier(featuresCol='features', labelCol=label_col)),
+    ("GBTClassifier", GBTClassifier(featuresCol='features', labelCol=label_col)),
+    ("LinearSVC", LinearSVC(featuresCol='features', labelCol=label_col)),
+    ("NaiveBayes", NaiveBayes(featuresCol='features', labelCol=label_col)),
+    ("MultilayerPerceptronClassifier", MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, layers=[3, 5, 2])),
+    ("FMClassifier", FMClassifier(featuresCol='features', labelCol=label_col)),
+    ("LightGBMClassifier", LightGBMClassifier(featuresCol='features', labelCol=label_col, predictionCol="prediction"))
 ]
 
 # Adicionar OneVsRest (usando LogisticRegression como classificador base)
-ovr = OneVsRest(classifier=LogisticRegression(featuresCol='features', labelCol=label_col))
+ovr = ("OneVsRest", OneVsRest(classifier=LogisticRegression(featuresCol='features', labelCol=label_col)))
 models.append(ovr)
 
 # Criar um DataFrame para armazenar os resultados
@@ -209,8 +212,7 @@ results = []
 evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName="accuracy")
 
 # Loop para treinar e avaliar cada modelo
-for model in models:
-    model_name = model.__class__.__name__
+for model_name, model in models:
     print(f"Treinando {model_name}...")
     
     try:
@@ -240,7 +242,6 @@ results_df.write.mode("overwrite").csv("path/to/save/results")
 
 # Parar a sessão Spark (opcional)
 spark.stop()
-    
     
     
     
