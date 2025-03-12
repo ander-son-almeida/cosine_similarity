@@ -90,7 +90,61 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
+
+from pyspark.sql import SparkSession
+from synapse.ml.automl import AutoMLClassifier
+from synapse.ml.core.platform import running_on_synapse
+
+# Iniciar uma sessão Spark
+spark = SparkSession.builder.appName("AutoMLExample").getOrCreate()
+
+# Exemplo de DataFrame
+data = [
+    (1.0, 2.0, 3.0, 0),
+    (4.0, 5.0, 6.0, 1),
+    (7.0, 8.0, 9.0, 0),
+    (10.0, 11.0, 12.0, 1)
+]
+columns = ["feature1", "feature2", "feature3", "label"]  # "label" é a coluna de rótulos
+df = spark.createDataFrame(data, columns)
+
+# Criar um VectorAssembler para combinar as features
+from pyspark.ml.feature import VectorAssembler
+assembler = VectorAssembler(inputCols=["feature1", "feature2", "feature3"], outputCol="features")
+df = assembler.transform(df)
+
+# Dividir o DataFrame em treino e teste
+train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+
+# Configurar o AutoMLClassifier
+automl = AutoMLClassifier(
+    task="classification",  # Tipo de tarefa (classificação)
+    labelCol="label",       # Coluna de rótulos
+    featuresCol="features", # Coluna de features
+    primaryMetric="accuracy", # Métrica primária para avaliação
+    maxIterations=10,       # Número máximo de iterações
+    timeout=300             # Tempo máximo em segundos
+)
+
+# Treinar o modelo AutoML
+print("Treinando o modelo AutoML...")
+fitted_automl = automl.fit(train_df)
+
+# Fazer previsões no conjunto de teste
+predictions = fitted_automl.transform(test_df)
+
+# Avaliar o desempenho do modelo
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+evaluator = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
+accuracy = evaluator.evaluate(predictions)
+print(f"Acurácia do modelo AutoML: {accuracy}")
+
+# Mostrar as previsões
+predictions.select("features", "label", "prediction").show()
+
+# Parar a sessão Spark
+spark.stop()
     
     
     
