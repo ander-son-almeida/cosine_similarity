@@ -242,7 +242,107 @@ results_df.write.mode("overwrite").csv("path/to/save/results")
 
 # Parar a sessão Spark (opcional)
 spark.stop()
-    
+
+
+from pyspark.sql import SparkSession
+from pyspark.ml.classification import (
+    LogisticRegression, DecisionTreeClassifier, RandomForestClassifier,
+    GBTClassifier, LinearSVC, NaiveBayes, MultilayerPerceptronClassifier,
+    FMClassifier
+)
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.feature import VectorAssembler
+from synapse.ml.lightgbm import LightGBMClassifier
+from pyspark.ml.classification import OneVsRest
+from pyspark.ml import Pipeline
+
+# Configurar o SparkSession para usar o SynapseML
+spark = SparkSession.builder \
+    .appName("AllModelsComparison") \
+    .config("spark.jars.packages", "com.microsoft.azure:synapseml_2.12:0.10.0") \
+    .getOrCreate()
+
+# Exemplo de DataFrame
+data = [
+    (1.0, 2.0, 3.0, 0),
+    (4.0, 5.0, 6.0, 1),
+    (7.0, 8.0, 9.0, 0),
+    (10.0, 11.0, 12.0, 1)
+]
+columns = ["feature1", "feature2", "feature3", "target"]  # "target" é a coluna de rótulos
+df = spark.createDataFrame(data, columns)
+
+# Lista de features (nomes das colunas)
+feature_cols = ["feature1", "feature2", "feature3"]
+
+# Nome da coluna de predição (rótulos)
+label_col = "target"
+
+# Criar um VectorAssembler para combinar as features
+assembler = VectorAssembler(inputCols=feature_cols, outputCol="features")
+df = assembler.transform(df)
+
+# Dividir o DataFrame em treino e teste
+train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+
+# Definir todos os modelos
+models = [
+    ("LogisticRegression", LogisticRegression(featuresCol='features', labelCol=label_col)),
+    ("DecisionTreeClassifier", DecisionTreeClassifier(featuresCol='features', labelCol=label_col)),
+    ("RandomForestClassifier", RandomForestClassifier(featuresCol='features', labelCol=label_col)),
+    ("GBTClassifier", GBTClassifier(featuresCol='features', labelCol=label_col)),
+    ("LinearSVC", LinearSVC(featuresCol='features', labelCol=label_col)),
+    ("NaiveBayes", NaiveBayes(featuresCol='features', labelCol=label_col)),
+    ("MultilayerPerceptronClassifier", MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, layers=[3, 5, 2])),
+    ("FMClassifier", FMClassifier(featuresCol='features', labelCol=label_col)),
+    ("LightGBMClassifier", LightGBMClassifier(featuresCol='features', labelCol=label_col, predictionCol="prediction"))
+]
+
+# Adicionar OneVsRest (usando LogisticRegression como classificador base)
+ovr = ("OneVsRest", OneVsRest(classifier=LogisticRegression(featuresCol='features', labelCol=label_col)))
+models.append(ovr)
+
+# Criar um DataFrame para armazenar os resultados
+results = []
+
+# Métricas de avaliação
+metrics = ["accuracy", "weightedPrecision", "weightedRecall", "f1"]
+
+# Loop para treinar e avaliar cada modelo
+for model_name, model in models:
+    print(f"Treinando {model_name}...")
+
+    try:
+        # Treinar o modelo
+        fitted_model = model.fit(train_df)
+
+        # Fazer previsões no conjunto de teste
+        predictions = fitted_model.transform(test_df)
+
+        # Avaliar o desempenho do modelo para cada métrica
+        model_metrics = {"Model": model_name}
+        for metric in metrics:
+            evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName=metric)
+            metric_value = evaluator.evaluate(predictions)
+            model_metrics[metric] = metric_value
+
+        # Salvar os resultados
+        results.append(model_metrics)
+        print(f"{model_name} - Métricas: {model_metrics}")
+    except Exception as e:
+        print(f"Erro ao treinar {model_name}: {str(e)}")
+
+# Converter os resultados para um DataFrame Spark
+results_df = spark.createDataFrame(results)
+
+# Mostrar os resultados
+results_df.show(truncate=False)
+
+# Salvar os resultados em um arquivo (opcional)
+results_df.write.mode("overwrite").csv("path/to/save/results")
+
+# Parar a sessão Spark (opcional)
+spark.stop() 
     
     
     
