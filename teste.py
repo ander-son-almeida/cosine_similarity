@@ -228,24 +228,24 @@ def objective(trial, model_name, train_df, test_df, label_col):
     # Fazer previsões no conjunto de teste
     predictions = fitted_model.transform(test_df)
     
-    # Avaliar a acurácia (métrica a ser otimizada)
+    # Avaliar a métrica escolhida (por padrão, acurácia)
     evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName="accuracy")
-    accuracy = evaluator.evaluate(predictions)
+    metric_value = evaluator.evaluate(predictions)
     
-    return accuracy
+    return metric_value
 
 # Definir todos os modelos
 models = [
-    "LogisticRegression",
-    "DecisionTreeClassifier",
-    "RandomForestClassifier",
-    "GBTClassifier",
-    "LinearSVC",
-    "NaiveBayes",
-    "MultilayerPerceptronClassifier",
-    "FMClassifier",
-    "LightGBMClassifier",
-    "OneVsRest"
+    ("LogisticRegression", LogisticRegression(featuresCol='features', labelCol=label_col)),
+    ("DecisionTreeClassifier", DecisionTreeClassifier(featuresCol='features', labelCol=label_col)),
+    ("RandomForestClassifier", RandomForestClassifier(featuresCol='features', labelCol=label_col)),
+    ("GBTClassifier", GBTClassifier(featuresCol='features', labelCol=label_col)),
+    ("LinearSVC", LinearSVC(featuresCol='features', labelCol=label_col)),
+    ("NaiveBayes", NaiveBayes(featuresCol='features', labelCol=label_col)),
+    ("MultilayerPerceptronClassifier", MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, layers=[3, 5, 2])),
+    ("FMClassifier", FMClassifier(featuresCol='features', labelCol=label_col)),
+    ("LightGBMClassifier", LightGBMClassifier(featuresCol='features', labelCol=label_col, predictionCol="prediction")),
+    ("OneVsRest", OneVsRest(classifier=LogisticRegression(featuresCol='features', labelCol=label_col)))
 ]
 
 # Criar um DataFrame para armazenar os resultados
@@ -254,42 +254,14 @@ results = []
 # Métricas a serem avaliadas
 metrics = ["accuracy", "weightedPrecision", "weightedRecall", "f1"]
 
+# Métrica escolhida para determinar o modelo vencedor (por padrão, acurácia)
+chosen_metric = "accuracy"
+
 # Loop para treinar e avaliar cada modelo
-for model_name in models:
-    print(f"Otimizando {model_name}...")
+for model_name, model in models:
+    print(f"Avaliando {model_name}...")
     
     try:
-        # Otimizar hiperparâmetros com Optuna
-        study = optuna.create_study(direction="maximize")
-        study.optimize(lambda trial: objective(trial, model_name, train_df, test_df, label_col), n_trials=10)
-        
-        # Melhores hiperparâmetros
-        best_params = study.best_params
-        print(f"Melhores hiperparâmetros para {model_name}: {best_params}")
-        
-        # Treinar o modelo com os melhores hiperparâmetros
-        if model_name == "LogisticRegression":
-            model = LogisticRegression(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "DecisionTreeClassifier":
-            model = DecisionTreeClassifier(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "RandomForestClassifier":
-            model = RandomForestClassifier(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "GBTClassifier":
-            model = GBTClassifier(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "LinearSVC":
-            model = LinearSVC(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "NaiveBayes":
-            model = NaiveBayes(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "MultilayerPerceptronClassifier":
-            model = MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "FMClassifier":
-            model = FMClassifier(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "LightGBMClassifier":
-            model = LightGBMClassifier(featuresCol='features', labelCol=label_col, **best_params)
-        elif model_name == "OneVsRest":
-            base_model = LogisticRegression(featuresCol='features', labelCol=label_col, **best_params)
-            model = OneVsRest(classifier=base_model)
-        
         # Treinar o modelo
         fitted_model = model.fit(train_df)
         
@@ -323,6 +295,74 @@ for model_name in models:
         print(f"{model_name} - Métricas: {model_metrics}")
     except Exception as e:
         print(f"Erro ao treinar {model_name}: {str(e)}")
+
+# Determinar o modelo vencedor com base na métrica escolhida
+winning_model = max(results, key=lambda x: x[chosen_metric])
+print(f"Modelo vencedor: {winning_model['Model']} com {chosen_metric}: {winning_model[chosen_metric]}")
+
+# Aplicar o Optuna apenas ao modelo vencedor
+print(f"Otimizando {winning_model['Model']} com Optuna...")
+study = optuna.create_study(direction="maximize")
+study.optimize(lambda trial: objective(trial, winning_model['Model'], train_df, test_df, label_col), n_trials=10)
+
+# Melhores hiperparâmetros
+best_params = study.best_params
+print(f"Melhores hiperparâmetros para {winning_model['Model']}: {best_params}")
+
+# Treinar o modelo vencedor com os melhores hiperparâmetros
+if winning_model['Model'] == "LogisticRegression":
+    model = LogisticRegression(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "DecisionTreeClassifier":
+    model = DecisionTreeClassifier(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "RandomForestClassifier":
+    model = RandomForestClassifier(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "GBTClassifier":
+    model = GBTClassifier(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "LinearSVC":
+    model = LinearSVC(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "NaiveBayes":
+    model = NaiveBayes(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "MultilayerPerceptronClassifier":
+    model = MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "FMClassifier":
+    model = FMClassifier(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "LightGBMClassifier":
+    model = LightGBMClassifier(featuresCol='features', labelCol=label_col, **best_params)
+elif winning_model['Model'] == "OneVsRest":
+    base_model = LogisticRegression(featuresCol='features', labelCol=label_col, **best_params)
+    model = OneVsRest(classifier=base_model)
+
+# Treinar o modelo
+fitted_model = model.fit(train_df)
+
+# Fazer previsões no conjunto de teste
+predictions = fitted_model.transform(test_df)
+
+# Avaliar o desempenho do modelo otimizado
+winning_model_metrics = {"Model": f"{winning_model['Model']} (Otimizado)"}
+for metric in metrics:
+    evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName=metric)
+    metric_value = evaluator.evaluate(predictions)
+    winning_model_metrics[metric] = metric_value
+
+# Métricas binárias (AUC e KS)
+if len(predictions.select(label_col).distinct().collect()) == 2:  # Verificar se é um problema binário
+    # AUC
+    auc_evaluator = BinaryClassificationEvaluator(labelCol=label_col, rawPredictionCol="rawPrediction", metricName="areaUnderROC")
+    auc = auc_evaluator.evaluate(predictions)
+    winning_model_metrics["AUC"] = auc
+    
+    # KS
+    ks = calculate_ks(predictions)
+    winning_model_metrics["KS"] = ks
+
+# Matriz de Confusão
+confusion_matrix = predictions.groupBy(label_col, "prediction").count().orderBy(label_col, "prediction")
+winning_model_metrics["ConfusionMatrix"] = confusion_matrix.collect()
+
+# Adicionar os resultados do modelo otimizado
+results.append(winning_model_metrics)
+print(f"{winning_model['Model']} (Otimizado) - Métricas: {winning_model_metrics}")
 
 # Converter os resultados para um DataFrame Spark
 results_df = spark.createDataFrame(results)
