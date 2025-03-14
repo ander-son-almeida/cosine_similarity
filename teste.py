@@ -93,71 +93,18 @@ if __name__ == "__main__":
 
 
 from pyspark.sql import SparkSession
-from synapse.ml.automl import AutoMLClassifier
-from synapse.ml.core.platform import running_on_synapse
-
-# Iniciar uma sessão Spark
-spark = SparkSession.builder.appName("AutoMLExample").getOrCreate()
-
-# Exemplo de DataFrame
-data = [
-    (1.0, 2.0, 3.0, 0),
-    (4.0, 5.0, 6.0, 1),
-    (7.0, 8.0, 9.0, 0),
-    (10.0, 11.0, 12.0, 1)
-]
-columns = ["feature1", "feature2", "feature3", "label"]  # "label" é a coluna de rótulos
-df = spark.createDataFrame(data, columns)
-
-# Criar um VectorAssembler para combinar as features
-from pyspark.ml.feature import VectorAssembler
-assembler = VectorAssembler(inputCols=["feature1", "feature2", "feature3"], outputCol="features")
-df = assembler.transform(df)
-
-# Dividir o DataFrame em treino e teste
-train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
-
-# Configurar o AutoMLClassifier
-automl = AutoMLClassifier(
-    task="classification",  # Tipo de tarefa (classificação)
-    labelCol="label",       # Coluna de rótulos
-    featuresCol="features", # Coluna de features
-    primaryMetric="accuracy", # Métrica primária para avaliação
-    maxIterations=10,       # Número máximo de iterações
-    timeout=300             # Tempo máximo em segundos
-)
-
-# Treinar o modelo AutoML
-print("Treinando o modelo AutoML...")
-fitted_automl = automl.fit(train_df)
-
-# Fazer previsões no conjunto de teste
-predictions = fitted_automl.transform(test_df)
-
-# Avaliar o desempenho do modelo
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-evaluator = MulticlassClassificationEvaluator(labelCol="label", predictionCol="prediction", metricName="accuracy")
-accuracy = evaluator.evaluate(predictions)
-print(f"Acurácia do modelo AutoML: {accuracy}")
-
-# Mostrar as previsões
-predictions.select("features", "label", "prediction").show()
-
-# Parar a sessão Spark
-spark.stop()
-    
-    
-from pyspark.sql import SparkSession
 from pyspark.ml.classification import (
     LogisticRegression, DecisionTreeClassifier, RandomForestClassifier,
     GBTClassifier, LinearSVC, NaiveBayes, MultilayerPerceptronClassifier,
     FMClassifier
 )
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClassificationEvaluator
 from pyspark.ml.feature import VectorAssembler
 from synapse.ml.lightgbm import LightGBMClassifier
 from pyspark.ml.classification import OneVsRest
-from pyspark.ml import Pipeline
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+import optuna
 
 # Configurar o SparkSession para usar o SynapseML
 spark = SparkSession.builder \
@@ -188,144 +135,189 @@ df = assembler.transform(df)
 # Dividir o DataFrame em treino e teste
 train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
 
-# Definir todos os modelos
-models = [
-    ("LogisticRegression", LogisticRegression(featuresCol='features', labelCol=label_col)),
-    ("DecisionTreeClassifier", DecisionTreeClassifier(featuresCol='features', labelCol=label_col)),
-    ("RandomForestClassifier", RandomForestClassifier(featuresCol='features', labelCol=label_col)),
-    ("GBTClassifier", GBTClassifier(featuresCol='features', labelCol=label_col)),
-    ("LinearSVC", LinearSVC(featuresCol='features', labelCol=label_col)),
-    ("NaiveBayes", NaiveBayes(featuresCol='features', labelCol=label_col)),
-    ("MultilayerPerceptronClassifier", MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, layers=[3, 5, 2])),
-    ("FMClassifier", FMClassifier(featuresCol='features', labelCol=label_col)),
-    ("LightGBMClassifier", LightGBMClassifier(featuresCol='features', labelCol=label_col, predictionCol="prediction"))
-]
-
-# Adicionar OneVsRest (usando LogisticRegression como classificador base)
-ovr = ("OneVsRest", OneVsRest(classifier=LogisticRegression(featuresCol='features', labelCol=label_col)))
-models.append(ovr)
-
-# Criar um DataFrame para armazenar os resultados
-results = []
-
-# Avaliador de desempenho
-evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName="accuracy")
-
-# Loop para treinar e avaliar cada modelo
-for model_name, model in models:
-    print(f"Treinando {model_name}...")
+# Função para calcular o KS
+def calculate_ks(predictions):
+    # Ordenar as previsões por probabilidade da classe positiva
+    sorted_predictions = predictions.orderBy(F.desc("probability"))
     
-    try:
-        # Treinar o modelo
-        fitted_model = model.fit(train_df)
-        
-        # Fazer previsões no conjunto de teste
-        predictions = fitted_model.transform(test_df)
-        
-        # Avaliar o desempenho do modelo
-        accuracy = evaluator.evaluate(predictions)
-        
-        # Salvar os resultados
-        results.append((model_name, accuracy))
-        print(f"{model_name} - Acurácia: {accuracy}")
-    except Exception as e:
-        print(f"Erro ao treinar {model_name}: {str(e)}")
+    # Calcular a taxa acumulada de verdadeiros positivos (TPR) e falsos positivos (FPR)
+    tpr = sorted_predictions.withColumn("tpr", F.sum("label").over(Window.orderBy(F.desc("probability"))))
+    fpr = sorted_predictions.withColumn("fpr", F.sum(1 - F.col("label")).over(Window.orderBy(F.desc("probability"))))
+    
+    # Calcular o KS
+    ks = tpr.withColumn("ks", F.col("tpr") - F.col("fpr")).agg(F.max("ks")).collect()[0][0]
+    return ks
 
-# Converter os resultados para um DataFrame Spark
-results_df = spark.createDataFrame(results, ["Model", "Accuracy"])
-
-# Mostrar os resultados
-results_df.show()
-
-# Salvar os resultados em um arquivo (opcional)
-results_df.write.mode("overwrite").csv("path/to/save/results")
-
-# Parar a sessão Spark (opcional)
-spark.stop()
-
-
-from pyspark.sql import SparkSession
-from pyspark.ml.classification import (
-    LogisticRegression, DecisionTreeClassifier, RandomForestClassifier,
-    GBTClassifier, LinearSVC, NaiveBayes, MultilayerPerceptronClassifier,
-    FMClassifier
-)
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
-from pyspark.ml.feature import VectorAssembler
-from synapse.ml.lightgbm import LightGBMClassifier
-from pyspark.ml.classification import OneVsRest
-from pyspark.ml import Pipeline
-
-# Configurar o SparkSession para usar o SynapseML
-spark = SparkSession.builder \
-    .appName("AllModelsComparison") \
-    .config("spark.jars.packages", "com.microsoft.azure:synapseml_2.12:0.10.0") \
-    .getOrCreate()
-
-# Exemplo de DataFrame
-data = [
-    (1.0, 2.0, 3.0, 0),
-    (4.0, 5.0, 6.0, 1),
-    (7.0, 8.0, 9.0, 0),
-    (10.0, 11.0, 12.0, 1)
-]
-columns = ["feature1", "feature2", "feature3", "target"]  # "target" é a coluna de rótulos
-df = spark.createDataFrame(data, columns)
-
-# Lista de features (nomes das colunas)
-feature_cols = ["feature1", "feature2", "feature3"]
-
-# Nome da coluna de predição (rótulos)
-label_col = "target"
-
-# Criar um VectorAssembler para combinar as features
-assembler = VectorAssembler(inputCols=feature_cols, outputCol="features")
-df = assembler.transform(df)
-
-# Dividir o DataFrame em treino e teste
-train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+# Função de objetivo para otimização com Optuna
+def objective(trial, model_name, train_df, test_df, label_col):
+    if model_name == "LogisticRegression":
+        model = LogisticRegression(
+            featuresCol='features',
+            labelCol=label_col,
+            regParam=trial.suggest_float("regParam", 0.01, 10.0, log=True),
+            elasticNetParam=trial.suggest_float("elasticNetParam", 0.0, 1.0)
+        )
+    elif model_name == "DecisionTreeClassifier":
+        model = DecisionTreeClassifier(
+            featuresCol='features',
+            labelCol=label_col,
+            maxDepth=trial.suggest_int("maxDepth", 2, 10),
+            minInstancesPerNode=trial.suggest_int("minInstancesPerNode", 1, 10)
+        )
+    elif model_name == "RandomForestClassifier":
+        model = RandomForestClassifier(
+            featuresCol='features',
+            labelCol=label_col,
+            numTrees=trial.suggest_int("numTrees", 10, 100),
+            maxDepth=trial.suggest_int("maxDepth", 2, 10)
+        )
+    elif model_name == "GBTClassifier":
+        model = GBTClassifier(
+            featuresCol='features',
+            labelCol=label_col,
+            maxIter=trial.suggest_int("maxIter", 10, 100),
+            maxDepth=trial.suggest_int("maxDepth", 2, 10)
+        )
+    elif model_name == "LinearSVC":
+        model = LinearSVC(
+            featuresCol='features',
+            labelCol=label_col,
+            regParam=trial.suggest_float("regParam", 0.01, 10.0, log=True),
+            maxIter=trial.suggest_int("maxIter", 10, 100)
+        )
+    elif model_name == "NaiveBayes":
+        model = NaiveBayes(
+            featuresCol='features',
+            labelCol=label_col,
+            smoothing=trial.suggest_float("smoothing", 0.0, 10.0)
+        )
+    elif model_name == "MultilayerPerceptronClassifier":
+        model = MultilayerPerceptronClassifier(
+            featuresCol='features',
+            labelCol=label_col,
+            layers=[3, trial.suggest_int("hiddenLayerSize", 2, 10), 2],
+            maxIter=trial.suggest_int("maxIter", 10, 100)
+        )
+    elif model_name == "FMClassifier":
+        model = FMClassifier(
+            featuresCol='features',
+            labelCol=label_col,
+            factorSize=trial.suggest_int("factorSize", 2, 10),
+            regParam=trial.suggest_float("regParam", 0.01, 10.0, log=True)
+        )
+    elif model_name == "LightGBMClassifier":
+        model = LightGBMClassifier(
+            featuresCol='features',
+            labelCol=label_col,
+            numLeaves=trial.suggest_int("numLeaves", 10, 100),
+            maxDepth=trial.suggest_int("maxDepth", 2, 10),
+            learningRate=trial.suggest_float("learningRate", 0.01, 0.3, log=True)
+        )
+    elif model_name == "OneVsRest":
+        base_model = LogisticRegression(
+            featuresCol='features',
+            labelCol=label_col,
+            regParam=trial.suggest_float("regParam", 0.01, 10.0, log=True),
+            elasticNetParam=trial.suggest_float("elasticNetParam", 0.0, 1.0)
+        )
+        model = OneVsRest(classifier=base_model)
+    
+    # Treinar o modelo
+    fitted_model = model.fit(train_df)
+    
+    # Fazer previsões no conjunto de teste
+    predictions = fitted_model.transform(test_df)
+    
+    # Avaliar a acurácia (métrica a ser otimizada)
+    evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName="accuracy")
+    accuracy = evaluator.evaluate(predictions)
+    
+    return accuracy
 
 # Definir todos os modelos
 models = [
-    ("LogisticRegression", LogisticRegression(featuresCol='features', labelCol=label_col)),
-    ("DecisionTreeClassifier", DecisionTreeClassifier(featuresCol='features', labelCol=label_col)),
-    ("RandomForestClassifier", RandomForestClassifier(featuresCol='features', labelCol=label_col)),
-    ("GBTClassifier", GBTClassifier(featuresCol='features', labelCol=label_col)),
-    ("LinearSVC", LinearSVC(featuresCol='features', labelCol=label_col)),
-    ("NaiveBayes", NaiveBayes(featuresCol='features', labelCol=label_col)),
-    ("MultilayerPerceptronClassifier", MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, layers=[3, 5, 2])),
-    ("FMClassifier", FMClassifier(featuresCol='features', labelCol=label_col)),
-    ("LightGBMClassifier", LightGBMClassifier(featuresCol='features', labelCol=label_col, predictionCol="prediction"))
+    "LogisticRegression",
+    "DecisionTreeClassifier",
+    "RandomForestClassifier",
+    "GBTClassifier",
+    "LinearSVC",
+    "NaiveBayes",
+    "MultilayerPerceptronClassifier",
+    "FMClassifier",
+    "LightGBMClassifier",
+    "OneVsRest"
 ]
-
-# Adicionar OneVsRest (usando LogisticRegression como classificador base)
-ovr = ("OneVsRest", OneVsRest(classifier=LogisticRegression(featuresCol='features', labelCol=label_col)))
-models.append(ovr)
 
 # Criar um DataFrame para armazenar os resultados
 results = []
 
-# Métricas de avaliação
+# Métricas a serem avaliadas
 metrics = ["accuracy", "weightedPrecision", "weightedRecall", "f1"]
 
 # Loop para treinar e avaliar cada modelo
-for model_name, model in models:
-    print(f"Treinando {model_name}...")
-
+for model_name in models:
+    print(f"Otimizando {model_name}...")
+    
     try:
+        # Otimizar hiperparâmetros com Optuna
+        study = optuna.create_study(direction="maximize")
+        study.optimize(lambda trial: objective(trial, model_name, train_df, test_df, label_col), n_trials=10)
+        
+        # Melhores hiperparâmetros
+        best_params = study.best_params
+        print(f"Melhores hiperparâmetros para {model_name}: {best_params}")
+        
+        # Treinar o modelo com os melhores hiperparâmetros
+        if model_name == "LogisticRegression":
+            model = LogisticRegression(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "DecisionTreeClassifier":
+            model = DecisionTreeClassifier(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "RandomForestClassifier":
+            model = RandomForestClassifier(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "GBTClassifier":
+            model = GBTClassifier(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "LinearSVC":
+            model = LinearSVC(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "NaiveBayes":
+            model = NaiveBayes(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "MultilayerPerceptronClassifier":
+            model = MultilayerPerceptronClassifier(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "FMClassifier":
+            model = FMClassifier(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "LightGBMClassifier":
+            model = LightGBMClassifier(featuresCol='features', labelCol=label_col, **best_params)
+        elif model_name == "OneVsRest":
+            base_model = LogisticRegression(featuresCol='features', labelCol=label_col, **best_params)
+            model = OneVsRest(classifier=base_model)
+        
         # Treinar o modelo
         fitted_model = model.fit(train_df)
-
+        
         # Fazer previsões no conjunto de teste
         predictions = fitted_model.transform(test_df)
-
+        
         # Avaliar o desempenho do modelo para cada métrica
         model_metrics = {"Model": model_name}
         for metric in metrics:
             evaluator = MulticlassClassificationEvaluator(labelCol=label_col, predictionCol="prediction", metricName=metric)
             metric_value = evaluator.evaluate(predictions)
             model_metrics[metric] = metric_value
-
+        
+        # Métricas binárias (AUC e KS)
+        if len(predictions.select(label_col).distinct().collect()) == 2:  # Verificar se é um problema binário
+            # AUC
+            auc_evaluator = BinaryClassificationEvaluator(labelCol=label_col, rawPredictionCol="rawPrediction", metricName="areaUnderROC")
+            auc = auc_evaluator.evaluate(predictions)
+            model_metrics["AUC"] = auc
+            
+            # KS
+            ks = calculate_ks(predictions)
+            model_metrics["KS"] = ks
+        
+        # Matriz de Confusão
+        confusion_matrix = predictions.groupBy(label_col, "prediction").count().orderBy(label_col, "prediction")
+        model_metrics["ConfusionMatrix"] = confusion_matrix.collect()
+        
         # Salvar os resultados
         results.append(model_metrics)
         print(f"{model_name} - Métricas: {model_metrics}")
@@ -342,9 +334,7 @@ results_df.show(truncate=False)
 results_df.write.mode("overwrite").csv("path/to/save/results")
 
 # Parar a sessão Spark (opcional)
-spark.stop() 
-    
-    
+spark.stop()
     
     
     
