@@ -91,6 +91,8 @@ def main():
 if __name__ == "__main__":
     main()
 
+https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/01-declarative-copilot/
+
     
     
     
