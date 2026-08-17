@@ -30,3 +30,5 @@ def elasticidade_ingenua_taxa_x_default(df: pd.DataFrame, coluna_taxa: str, cont
     return {"modelo": modelo, "n_descartado_nan": n_descartado,
             "pct_descartado_nan": (n_descartado / n_antes) if n_antes else 0.0,
             "padronizacao": {"medias": medias, "desvios": desvios, "colunas": colunas_x}}
+
+rrtt
