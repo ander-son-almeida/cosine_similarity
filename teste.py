@@ -1,101 +1,21 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Mar 11 22:27:29 2025
+def plot_hazard_de_base(resultado_hazard: dict, df_painel: pd.DataFrame, covariaveis: List[str]) -> plt.Figure:
+    modelo_hazard = resultado_hazard["modelo"]
+    padronizacao = resultado_hazard["padronizacao"]
+    colunas_modelo = modelo_hazard.model.exog_names
 
-@author: Anderson Almeida
-"""
+    df = df_painel.copy()
+    df["mob_ao_quadrado"] = df["months_on_book"] ** 2
+    for c in padronizacao["colunas"]:
+        df[c] = (df[c] - padronizacao["medias"][c]) / padronizacao["desvios"][c]
+    df["const"] = 1.0
 
-import os
-import PyPDF2
-import nltk
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+    df["hazard_previsto"] = modelo_hazard.predict(df[colunas_modelo])
+    curva = df.groupby("months_on_book")["hazard_previsto"].mean().reset_index()
 
-# Baixar recursos do NLTK (se necessário)
-nltk.download('punkt')
-
-def ler_pdf(caminho):
-    with open(caminho, 'rb') as arquivo:
-        leitor = PyPDF2.PdfReader(arquivo)
-        texto = ''
-        for pagina in leitor.pages:
-            texto += pagina.extract_text()
-        return texto
-
-def processar_texto(texto):
-    tokens = nltk.word_tokenize(texto.lower())
-    return ' '.join(tokens)
-
-def criar_embeddings(textos):
-    vetorizador = TfidfVectorizer()
-    embeddings = vetorizador.fit_transform(textos)
-    return vetorizador, embeddings
-
-def pesquisar(query, vetorizador, embeddings, textos):
-    query_embedding = vetorizador.transform([query])
-    similaridades = cosine_similarity(query_embedding, embeddings).flatten()
-    resultados = [(similaridade, texto) for similaridade, texto in zip(similaridades, textos)]
-    resultados.sort(reverse=True, key=lambda x: x[0])
-    return resultados
-
-def encontrar_trecho_relevante(query, texto, tamanho_janela=100):
-    """
-    Encontra o trecho do texto mais relevante para a consulta.
-    """
-    palavras_query = set(query.lower().split())
-    palavras_texto = texto.lower().split()
-    
-    melhor_trecho = ''
-    melhor_pontuacao = 0
-    
-    # Procura o trecho com mais palavras da consulta
-    for i in range(0, len(palavras_texto), tamanho_janela):
-        trecho = ' '.join(palavras_texto[i:i + tamanho_janela])
-        palavras_trecho = set(trecho.split())
-        pontuacao = len(palavras_query.intersection(palavras_trecho))
-        
-        if pontuacao > melhor_pontuacao:
-            melhor_pontuacao = pontuacao
-            melhor_trecho = trecho
-    
-    return melhor_trecho if melhor_trecho else texto[:tamanho_janela]  # Retorna o início se não encontrar nada
-
-def main():
-    pasta = r'C:\Users\Anderson Almeida\Desktop\teste_pdf'
-    textos = []
-    nomes_arquivos = []
-    
-    for arquivo in os.listdir(pasta):
-        if arquivo.endswith('.pdf'):
-            caminho = os.path.join(pasta, arquivo)
-            texto = ler_pdf(caminho)
-            texto_processado = processar_texto(texto)
-            textos.append(texto_processado)
-            nomes_arquivos.append(arquivo)
-
-    vetorizador, embeddings = criar_embeddings(textos)
-
-    while True:
-        query = input("Digite sua pesquisa (ou 'sair' para terminar): ")
-        if query.lower() == 'sair':
-            break
-        
-        resultados = pesquisar(query, vetorizador, embeddings, textos)
-        
-        for i, (similaridade, texto) in enumerate(resultados[:5]):  # Mostrar os top 5 resultados
-            trecho_relevante = encontrar_trecho_relevante(query, texto)
-            print(f"\nArquivo: {nomes_arquivos[i]}")
-            print(f"Similaridade: {similaridade:.4f}")
-            print(f"Trecho relevante:\n{trecho_relevante}\n")
-
-if __name__ == "__main__":
-    main()
-
-https://microsoft.github.io/copilot-camp/pages/extend-m365-copilot/01-declarative-copilot/
-
-    
-    
-    
-    
-    
-    
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.plot(curva["months_on_book"], curva["hazard_previsto"], marker="o", color="#4C72B0", linewidth=2)
+    ax.set_xlabel("Months on Book (meses desde a originacao)")
+    ax.set_ylabel("Hazard previsto (probabilidade de default neste mes)")
+    ax.set_title("Hazard de base ao longo da vida do contrato")
+    fig.tight_layout()
+    return fig
