@@ -13,13 +13,13 @@ meses_unicos = sorted(painel["mes_calendario"].unique())
 
 def bolha_para_intervalo(safra_ini, safra_fim):
     subset = painel[(painel["safra"] >= safra_ini) & (painel["safra"] <= safra_fim)]
-    pop = subset["populacao_risco"].values
+    valor_para_tamanho = subset["taxa_entrada"].values  # tamanho agora acompanha a taxa, nao a populacao
     raio_min_px, raio_max_px = 4, 18
-    pop_min, pop_max = pop.min(), pop.max()
-    if pop_max == pop_min:
-        tamanhos = np.full(len(pop), (raio_min_px + raio_max_px) / 2)
+    valor_min, valor_max = valor_para_tamanho.min(), valor_para_tamanho.max()
+    if valor_max == valor_min:
+        tamanhos = np.full(len(valor_para_tamanho), (raio_min_px + raio_max_px) / 2)
     else:
-        t = (np.sqrt(pop) - np.sqrt(pop_min)) / (np.sqrt(pop_max) - np.sqrt(pop_min))
+        t = (np.sqrt(valor_para_tamanho) - np.sqrt(valor_min)) / (np.sqrt(valor_max) - np.sqrt(valor_min))
         tamanhos = raio_min_px + t * (raio_max_px - raio_min_px)
     taxas = subset["taxa_entrada"].values
     safras_no_intervalo = sorted(subset["safra"].unique())
@@ -39,7 +39,7 @@ def bolha_para_intervalo(safra_ini, safra_fim):
 # --- figura base: 3 traces, SEM frames (FigureWidget nao suporta frames) ---
 fig = make_subplots(
     rows=1, cols=2,
-    subplot_titles=("Bolhas: safra x MOB -- cor e eixos pelo intervalo selecionado",
+    subplot_titles=("Bolhas: safra x MOB -- tamanho e cor pela taxa, no intervalo selecionado",
                      f"Teste de Page: C+ (piora) e C- (melhora), limite h={H_EMPIRICO:.1f}"),
     column_widths=[0.5, 0.5],
 )
