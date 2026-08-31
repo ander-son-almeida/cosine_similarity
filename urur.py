@@ -1,24 +1,67 @@
-# Como interpretar o gráfico de bolhas (safra × MOB)
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+import plotly.graph_objects as go
+import pyspark.sql.functions as F
 
-**O que cada elemento representa**
+# --- 1. Agregar ecl_total do df_painel_confiavel (ciclo_credito) no mesmo grão do carteira_diagnostico ---
+# ATENCAO: confirme os nomes reais de coluna abaixo contra o df_painel_confiavel atual --
+# months_on_book, ref_month, ecl_total sao os nomes registrados na v8; se algo mudou desde
+# entao, ajuste aqui antes de rodar.
 
-Cada bolha é uma combinação específica de safra (eixo vertical) e MOB — idade do contrato em meses (eixo horizontal). A posição da bolha nunca muda; o que muda com os controles é o que fica visível e como a cor é calibrada.
+df_ecl_por_celula = (
+    df_painel_confiavel
+    .withColumn("safra_derivada", F.add_months(F.col("ref_month"), -(F.col("months_on_book") - 1)))
+    .groupBy(F.col("safra_derivada").alias("safra"),
+             F.col("months_on_book").alias("mob"),
+             F.col("ref_month").alias("mes_calendario"))
+    .agg(F.sum("ecl_total").alias("ecl_total_celula"))
+)
 
-**Cor e tamanho**: neste gráfico, os dois codificam a mesma informação — a taxa de entrada em atraso grave (90+) daquela célula, dentro do intervalo de safras selecionado no momento. Bolha maior e mais escura = taxa mais alta. A escala de cor é recalculada a cada vez que o intervalo de safras muda, então a mesma taxa pode parecer mais ou menos "grave" dependendo do que mais está sendo comparado — é contraste relativo à seleção atual, não absoluto contra a carteira inteira.
+ecl_pd = df_ecl_por_celula.toPandas()
+ecl_pd["safra"] = pd.to_datetime(ecl_pd["safra"])
+ecl_pd["mes_calendario"] = pd.to_datetime(ecl_pd["mes_calendario"])
 
-**Os três padrões espaciais, e o que cada um aponta:**
+# --- 2. Juntar ao painel que ja existe no carteira_diagnostico ---
+painel = painel.merge(ecl_pd, on=["safra", "mob", "mes_calendario"], how="left")
 
-- **Linha (bolhas na mesma altura, atravessando o eixo horizontal)** — a mesma safra, em idades diferentes. Se essa linha inteira aparece consistentemente maior/mais escura que as linhas vizinhas, é sinal de problema de subscrição daquela leva específica — algo na forma como aqueles contratos foram aprovados, não algo que aconteceu depois. Aponta de volta para a política de crédito vigente no mês de originação daquela safra.
+faltando = painel["ecl_total_celula"].isna().sum()
+print(f"Celulas sem ECL apos o merge: {faltando}")  # mesma checagem que ja fazemos pra macro -- nao ignorar se > 0
 
-- **Diagonal (bolhas que, somando safra + MOB, caem no mesmo mês calendário)** — safras diferentes, cada uma na sua própria idade, mas todas vivendo o mesmo momento. Se essa diagonal aparece mais escura, é sinal de choque de época — algo bateu em todo mundo que estava com contrato ativo naquele mês, independente de quando cada um nasceu. Aponta para um evento externo (macro, operacional) datado.
+# --- 3. Modelo de referencia para ECL -- Gamma, nao Poisson, porque agora o alvo e dinheiro
+#     (continuo, positivo, assimetrico), nao mais contagem de eventos ---
+FORMULA_ECL = "ecl_total_celula ~ C(mob_bin) + veio_truncado" + (" + macro_reportado" if USA_MACRO else "")
 
-- **Coluna (mesma idade, safras diferentes)** — se uma faixa inteira de MOB aparece sistematicamente maior/mais escura em todas as safras, isso normalmente não é anomalia: é o formato natural da curva de risco por idade, que sobe até certo ponto da vida do contrato e depois cai. Só vira sinal de alerta se uma coluna específica estiver destoando do formato esperado para aquela idade — não pelo tamanho absoluto, mas por fugir do padrão que as outras colunas também deveriam seguir.
+sub_valido = painel[painel["ecl_total_celula"] > 0].dropna(subset=["ecl_total_celula", "populacao_risco"])
+modelo_ecl = smf.glm(
+    formula=FORMULA_ECL, data=sub_valido,
+    family=sm.families.Gamma(link=sm.families.links.Log()),
+    offset=np.log(sub_valido["populacao_risco"]),
+).fit()
 
-**Regiões (aglomerados de bolhas vizinhas, não uma célula isolada)**: uma única bolha grande e escura, sozinha, pode ser ruído — população pequena, evento raro isolado. Um aglomerado — várias células vizinhas, tanto em safra quanto em MOB, todas destacadas ao mesmo tempo — é evidência mais forte, porque é bem menos provável que aconteça só por acaso. Ao ler o gráfico, dê mais peso a regiões do que a pontos isolados.
+painel["ecl_esperado"] = modelo_ecl.predict(painel, offset=np.log(painel["populacao_risco"]))
+painel["ecl_excedente"] = painel["ecl_total_celula"] - painel["ecl_esperado"]
 
-**Os dois controles interativos:**
+# --- 4. Grafico: ECL esperado x excedente, por safra ---
+provisao_por_safra = painel.groupby("safra").agg(
+    ecl_esperado=("ecl_esperado", "sum"),
+    ecl_excedente=("ecl_excedente", "sum"),
+).reset_index()
 
-- **Intervalo de safras**: estreita ou amplia quais safras entram na comparação, recalculando a escala de cor para esse subconjunto. Útil para investigar uma janela específica sem a cor ser "diluída" pelo resto da carteira.
-- **Fotografia**: controla até qual mês o painel de resíduo acumulado (teste de Page, ao lado) está revelado — não filtra o gráfico de bolhas, só o painel de monitoramento.
-
-**Limite deste gráfico**: como tamanho e cor aqui codificam a mesma coisa (taxa), ele não mais avisa visualmente quando uma célula tem pouco contrato por trás — isso é uma troca deliberada feita nesta versão. Célula com poucos contratos ainda pode aparecer grande e escura por puro ruído de amostra pequena; vale checar `populacao_risco` da célula antes de tratar qualquer bolha isolada como sinal confiável.
+fig_provisao = go.Figure()
+fig_provisao.add_trace(go.Bar(
+    x=[s.strftime("%Y-%m") for s in provisao_por_safra["safra"]],
+    y=provisao_por_safra["ecl_esperado"], name="ECL esperado (idade + época)",
+    marker_color="#898781",
+))
+fig_provisao.add_trace(go.Bar(
+    x=[s.strftime("%Y-%m") for s in provisao_por_safra["safra"]],
+    y=provisao_por_safra["ecl_excedente"], name="ECL excedente (efeito de safra não explicado)",
+    marker_color="#D85A30",
+))
+fig_provisao.update_layout(
+    barmode="stack", title="ECL por safra -- esperado x excedente (ecl_total real, sem proxy de LGD)",
+    xaxis_title="Safra", yaxis_title="R$", template="plotly_white", width=1400, height=450,
+)
+fig_provisao.show()
