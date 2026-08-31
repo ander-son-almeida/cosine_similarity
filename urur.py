@@ -1,121 +1,24 @@
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import ipywidgets as widgets
-from IPython.display import display
+# Como interpretar o gráfico de bolhas (safra × MOB)
 
-# --- pressupoe que ja existem: painel, backtest_df, mob_maximo, H_EMPIRICO ---
+**O que cada elemento representa**
 
-LARGURA = 1400
-safras_ordenadas = sorted(painel["safra"].unique())
-meses_unicos = sorted(painel["mes_calendario"].unique())
+Cada bolha é uma combinação específica de safra (eixo vertical) e MOB — idade do contrato em meses (eixo horizontal). A posição da bolha nunca muda; o que muda com os controles é o que fica visível e como a cor é calibrada.
 
-def bolha_para_intervalo(safra_ini, safra_fim):
-    subset = painel[(painel["safra"] >= safra_ini) & (painel["safra"] <= safra_fim)]
-    valor_para_tamanho = subset["taxa_entrada"].values  # tamanho agora acompanha a taxa, nao a populacao
-    raio_min_px, raio_max_px = 4, 18
-    valor_min, valor_max = valor_para_tamanho.min(), valor_para_tamanho.max()
-    if valor_max == valor_min:
-        tamanhos = np.full(len(valor_para_tamanho), (raio_min_px + raio_max_px) / 2)
-    else:
-        t = (np.sqrt(valor_para_tamanho) - np.sqrt(valor_min)) / (np.sqrt(valor_max) - np.sqrt(valor_min))
-        tamanhos = raio_min_px + t * (raio_max_px - raio_min_px)
-    taxas = subset["taxa_entrada"].values
-    safras_no_intervalo = sorted(subset["safra"].unique())
-    indice_local = {s: i for i, s in enumerate(safras_no_intervalo)}
-    y_num = subset["safra"].map(indice_local).values
-    return dict(
-        x=subset["mob"].values, y=y_num, tamanhos=tamanhos * 2, taxas=taxas,
-        cmin=float(np.min(taxas)) if len(taxas) else 0.0,
-        cmax=float(np.quantile(taxas, 0.98)) if len(taxas) else 1.0,
-        mob_min=float(subset["mob"].min() - 0.5) if len(subset) else 0.5,
-        mob_max=float(subset["mob"].max() + 0.5) if len(subset) else mob_maximo + 0.5,
-        n_safras=len(safras_no_intervalo),
-        rotulos_y=[s.strftime("%Y-%m") for s in safras_no_intervalo],
-        customdata=[str(s.date()) for s in subset["safra"]],
-    )
+**Cor e tamanho**: neste gráfico, os dois codificam a mesma informação — a taxa de entrada em atraso grave (90+) daquela célula, dentro do intervalo de safras selecionado no momento. Bolha maior e mais escura = taxa mais alta. A escala de cor é recalculada a cada vez que o intervalo de safras muda, então a mesma taxa pode parecer mais ou menos "grave" dependendo do que mais está sendo comparado — é contraste relativo à seleção atual, não absoluto contra a carteira inteira.
 
-# --- figura base: 3 traces, SEM frames (FigureWidget nao suporta frames) ---
-fig = make_subplots(
-    rows=1, cols=2,
-    subplot_titles=("Bolhas: safra x MOB -- tamanho e cor pela taxa, no intervalo selecionado",
-                     f"Teste de Page: C+ (piora) e C- (melhora), limite h={H_EMPIRICO:.1f}"),
-    column_widths=[0.5, 0.5],
-)
+**Os três padrões espaciais, e o que cada um aponta:**
 
-j0 = bolha_para_intervalo(safras_ordenadas[0], safras_ordenadas[min(5, len(safras_ordenadas) - 1)])
-fig.add_trace(go.Scatter(
-    x=j0["x"], y=j0["y"], mode="markers",
-    marker=dict(size=j0["tamanhos"], color=j0["taxas"], colorscale="Reds",
-                cmin=j0["cmin"], cmax=j0["cmax"], showscale=True,
-                colorbar=dict(title="taxa", x=0.46)),
-    customdata=j0["customdata"],
-    hovertemplate="Safra %{customdata}<br>MOB %{x}<br>Taxa %{marker.color:.2%}<extra></extra>",
-), row=1, col=1)
-fig.add_trace(go.Scatter(x=[], y=[], mode="lines+markers", name="C+ (piora sustentada)",
-                          line=dict(color="#B23A48", width=2)), row=1, col=2)
-fig.add_trace(go.Scatter(x=[], y=[], mode="lines+markers", name="C- (melhora sustentada)",
-                          line=dict(color="#2A6F97", width=2)), row=1, col=2)
-fig.add_hline(y=H_EMPIRICO, line_dash="dash", line_color="black",
-              annotation_text=f"h = {H_EMPIRICO:.1f}", row=1, col=2)
-fig.update_layout(
-    width=LARGURA, height=650,
-    xaxis=dict(title="MOB (idade do contrato)", range=[j0["mob_min"], j0["mob_max"]]),
-    yaxis=dict(title="Safra", range=[-0.5, j0["n_safras"] - 0.5],
-               tickvals=list(range(j0["n_safras"])), ticktext=j0["rotulos_y"]),
-    xaxis2=dict(title="Fotografia (mes de referencia)", range=[meses_unicos[0], meses_unicos[-1]]),
-    yaxis2_title="Estatistica de Page",
-    template="plotly_white", margin=dict(t=70, b=50),
-)
+- **Linha (bolhas na mesma altura, atravessando o eixo horizontal)** — a mesma safra, em idades diferentes. Se essa linha inteira aparece consistentemente maior/mais escura que as linhas vizinhas, é sinal de problema de subscrição daquela leva específica — algo na forma como aqueles contratos foram aprovados, não algo que aconteceu depois. Aponta de volta para a política de crédito vigente no mês de originação daquela safra.
 
-fig_widget = go.FigureWidget(fig)
+- **Diagonal (bolhas que, somando safra + MOB, caem no mesmo mês calendário)** — safras diferentes, cada uma na sua própria idade, mas todas vivendo o mesmo momento. Se essa diagonal aparece mais escura, é sinal de choque de época — algo bateu em todo mundo que estava com contrato ativo naquele mês, independente de quando cada um nasceu. Aponta para um evento externo (macro, operacional) datado.
 
-# --- controle 1: intervalo de safras (duas alcas de verdade) ---
-slider_safra = widgets.SelectionRangeSlider(
-    options=[(s.strftime("%Y-%m"), s) for s in safras_ordenadas],
-    index=(0, min(5, len(safras_ordenadas) - 1)),
-    description="Safras:", layout=widgets.Layout(width="700px"),
-    style={"description_width": "initial"},
-)
+- **Coluna (mesma idade, safras diferentes)** — se uma faixa inteira de MOB aparece sistematicamente maior/mais escura em todas as safras, isso normalmente não é anomalia: é o formato natural da curva de risco por idade, que sobe até certo ponto da vida do contrato e depois cai. Só vira sinal de alerta se uma coluna específica estiver destoando do formato esperado para aquela idade — não pelo tamanho absoluto, mas por fugir do padrão que as outras colunas também deveriam seguir.
 
-def ao_mudar_intervalo(change):
-    safra_ini, safra_fim = change["new"]
-    j = bolha_para_intervalo(safra_ini, safra_fim)
-    with fig_widget.batch_update():
-        fig_widget.data[0].x = j["x"]
-        fig_widget.data[0].y = j["y"]
-        fig_widget.data[0].marker.size = j["tamanhos"]
-        fig_widget.data[0].marker.color = j["taxas"]
-        fig_widget.data[0].marker.cmin = j["cmin"]
-        fig_widget.data[0].marker.cmax = j["cmax"]
-        fig_widget.data[0].customdata = j["customdata"]
-        fig_widget.layout.xaxis.range = [j["mob_min"], j["mob_max"]]
-        fig_widget.layout.yaxis.range = [-0.5, j["n_safras"] - 0.5]
-        fig_widget.layout.yaxis.tickvals = list(range(j["n_safras"]))
-        fig_widget.layout.yaxis.ticktext = j["rotulos_y"]
+**Regiões (aglomerados de bolhas vizinhas, não uma célula isolada)**: uma única bolha grande e escura, sozinha, pode ser ruído — população pequena, evento raro isolado. Um aglomerado — várias células vizinhas, tanto em safra quanto em MOB, todas destacadas ao mesmo tempo — é evidência mais forte, porque é bem menos provável que aconteça só por acaso. Ao ler o gráfico, dê mais peso a regiões do que a pontos isolados.
 
-slider_safra.observe(ao_mudar_intervalo, names="value")
+**Os dois controles interativos:**
 
-# --- controle 2: fotografia (valor unico -- substitui o slider nativo de frames do Plotly,
-#     que nao pode conviver com FigureWidget) ---
-slider_fotografia = widgets.SelectionSlider(
-    options=[(m.strftime("%Y-%m"), m) for m in meses_unicos],
-    value=meses_unicos[-1],
-    description="Fotografia:", layout=widgets.Layout(width="700px"),
-    style={"description_width": "initial"},
-)
+- **Intervalo de safras**: estreita ou amplia quais safras entram na comparação, recalculando a escala de cor para esse subconjunto. Útil para investigar uma janela específica sem a cor ser "diluída" pelo resto da carteira.
+- **Fotografia**: controla até qual mês o painel de resíduo acumulado (teste de Page, ao lado) está revelado — não filtra o gráfico de bolhas, só o painel de monitoramento.
 
-def ao_mudar_fotografia(change):
-    mes_foto = change["new"]
-    sub = backtest_df[backtest_df["mes_calendario"] <= mes_foto]
-    with fig_widget.batch_update():
-        fig_widget.data[1].x = sub["mes_calendario"]
-        fig_widget.data[1].y = sub["c_mais"]
-        fig_widget.data[2].x = sub["mes_calendario"]
-        fig_widget.data[2].y = sub["c_menos"]
-
-slider_fotografia.observe(ao_mudar_fotografia, names="value")
-ao_mudar_fotografia({"new": meses_unicos[-1]})  # popula o Page chart de saida
-
-display(widgets.VBox([slider_safra, slider_fotografia]), fig_widget)
+**Limite deste gráfico**: como tamanho e cor aqui codificam a mesma coisa (taxa), ele não mais avisa visualmente quando uma célula tem pouco contrato por trás — isso é uma troca deliberada feita nesta versão. Célula com poucos contratos ainda pode aparecer grande e escura por puro ruído de amostra pequena; vale checar `populacao_risco` da célula antes de tratar qualquer bolha isolada como sinal confiável.
