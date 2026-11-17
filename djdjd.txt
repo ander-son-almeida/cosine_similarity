@@ -1,0 +1,15 @@
+#  Técnica  Parâmetro  Situação
+1  Calibração por intercepto  PD e LGD  pronta
+2  Calibração de Platt  PD  pronta
+3  Calibração linear  LGD  pronta
+4  Calibração isotônica  PD e LGD  pronta
+5  Régua por fusão de decis  PD e LGD  pronta
+6  Régua por binning ótimo (optbinning)  PD e LGD  pronta
+7  Semáforo com intervalo de Jeffreys  PD  pronta
+8  Semáforo com intervalo bootstrap  LGD  a implementar
+9  PD lifetime por costura  PD  pronta
+10  ELGD por faixa (LGD média no mês 0)  LGD  pronta
+11  Regressão linear  LGD  a implementar
+12  Extra Trees  PD e LGD  a implementar
+13  CatBoost  PD e LGD  a implementar
+14  BELGD / ELBE (perda restante de quem já está em default)  LGD  a implementar
